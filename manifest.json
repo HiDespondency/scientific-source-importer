@@ -1,0 +1,10 @@
+{
+  "id": "scientific-source-importer",
+  "name": "Scientific Source Importer",
+  "version": "0.6.0",
+  "minAppVersion": "1.5.0",
+  "description": "Импорт научных источников по URL/PDF и из Zotero в Obsidian: метаданные, PDF и правая панель источника.",
+  "author": "OpenAI Codex",
+  "authorUrl": "https://openai.com",
+  "isDesktopOnly": true
+}
