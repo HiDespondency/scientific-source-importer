@@ -197,7 +197,7 @@ class ZoteroImporter {
 		const name = `${firstAuthorFamily(authors)}${year ? ` ${year}` : ''} - ${title}`;
 		const vaultPath = await this.uniqueVaultPath(pdfVaultPath(this.settings.sourceFilesDir, name));
 		await this.ensureVaultFolder(path.posix.dirname(vaultPath));
-		const buffer = fs.readFileSync(sourcePath);
+		const buffer = await fs.promises.readFile(sourcePath);
 		const arrayBuffer = bufferToArrayBuffer(buffer);
 		if (typeof this.app.vault.createBinary === 'function') {
 			await this.app.vault.createBinary(vaultPath, arrayBuffer);

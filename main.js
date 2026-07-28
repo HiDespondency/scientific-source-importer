@@ -12,6 +12,8 @@ let buildReference;
 
 const VIEW_TYPE_SOURCE_DETAILS = 'scientific-source-importer-details';
 const SOURCE_PANEL_MIN_WIDTH = 490;
+const CITATION_ORDER_CACHE_LIMIT = 25;
+const LAST_USED_SAVE_INTERVAL_MS = 30000;
 const CITE_PATTERN = /\[@([A-Za-zА-Яа-яЁё0-9:.#$%&\-+?<>~_/]+)\]/g;
 
 const DEFAULT_SETTINGS = {
@@ -155,7 +157,7 @@ function createCitationExtension() {
 			}
 
 			update(update) {
-				if (update.docChanged || update.viewportChanged) {
+				if (update.docChanged) {
 					this.decorations = buildCitationDecorations(update.state);
 				}
 			}
@@ -717,6 +719,8 @@ class SourceImporterSettingTab extends PluginSettingTab {
 class ScientificSourceImporterPlugin extends Plugin {
 	async onload() {
 		await this.loadSettings();
+		this.citationOrderCache = new Map();
+		this.sourceKeyIndexCache = null;
 		this.loadInternalModules();
 		this.importService = new ImportService(this.app, this.settings, requestUrl);
 		this.zoteroImporter = new ZoteroImporter(this.app, this.settings, this.pluginDir);
@@ -756,9 +760,11 @@ class ScientificSourceImporterPlugin extends Plugin {
 		});
 
 		this.registerEvent(this.app.vault.on('delete', (file) => {
+			if (file?.path) this.citationOrderCache.delete(file.path);
 			if (file?.path) void this.removeImportedSourceByPath(file.path);
 		}));
 		this.registerEvent(this.app.vault.on('rename', (file, oldPath) => {
+			if (oldPath) this.citationOrderCache.delete(oldPath);
 			if (file?.path && oldPath) void this.renameImportedSourcePath(oldPath, file.path);
 		}));
 	}
@@ -796,6 +802,7 @@ class ScientificSourceImporterPlugin extends Plugin {
 
 	async saveSettings() {
 		await this.saveData(this.settings);
+		this.sourceKeyIndexCache = null;
 		if (this.importService) this.importService.settings = this.settings;
 		if (this.zoteroImporter) this.zoteroImporter.settings = this.settings;
 	}
@@ -1026,11 +1033,15 @@ class ScientificSourceImporterPlugin extends Plugin {
 	async markRecordUsed(record) {
 		const key = this.recordIdentity(record || {});
 		if (!key) return;
+		const now = Date.now();
+		const nextLastUsedAt = new Date(now).toISOString();
 		let changed = false;
 		this.settings.importedSources = (this.settings.importedSources || []).map((source) => {
 			if (this.recordIdentity(source) !== key) return source;
+			const previous = Date.parse(cleanText(source.lastUsedAt));
+			if (Number.isFinite(previous) && now - previous < LAST_USED_SAVE_INTERVAL_MS) return source;
 			changed = true;
-			return Object.assign({}, source, { lastUsedAt: new Date().toISOString() });
+			return Object.assign({}, source, { lastUsedAt: nextLastUsedAt });
 		});
 		if (changed) await this.saveSettings();
 	}
@@ -1081,8 +1092,7 @@ class ScientificSourceImporterPlugin extends Plugin {
 			return;
 		}
 
-		const content = await this.app.vault.cachedRead(file);
-		const citeKeys = Array.from(collectCitationOrder(content).keys());
+		const citeKeys = Array.from((await this.getCitationOrderForFile(file)).keys());
 		await this.cleanupRightSidebarArtifacts();
 		const leaf = await this.getSourceDetailsLeaf();
 		if (!leaf) return;
@@ -1098,8 +1108,7 @@ class ScientificSourceImporterPlugin extends Plugin {
 			new Notice('Открой Markdown-заметку с ключами вида [@ключ].');
 			return;
 		}
-		const content = await this.app.vault.cachedRead(file);
-		const citeKeys = Array.from(collectCitationOrder(content).keys());
+		const citeKeys = Array.from((await this.getCitationOrderForFile(file)).keys());
 		view.showNoteCitations(file, citeKeys, this.buildCitationResult(citeKeys));
 	}
 
@@ -1132,7 +1141,20 @@ class ScientificSourceImporterPlugin extends Plugin {
 	findImportedSourceByKey(key) {
 		const wanted = cleanText(key);
 		if (!wanted) return null;
-		return (this.settings.importedSources || []).find((record) => this.sourceCitationKeys(record).includes(wanted)) || null;
+		return this.getSourceKeyIndex().get(wanted) || null;
+	}
+
+	getSourceKeyIndex() {
+		const sources = this.settings.importedSources || [];
+		if (this.sourceKeyIndexCache?.sources === sources) return this.sourceKeyIndexCache.index;
+		const index = new Map();
+		for (const record of sources) {
+			for (const key of this.sourceCitationKeys(record)) {
+				if (!index.has(key)) index.set(key, record);
+			}
+		}
+		this.sourceKeyIndexCache = { sources, index };
+		return index;
 	}
 
 	sourceCitationKeys(record) {
@@ -1157,8 +1179,7 @@ class ScientificSourceImporterPlugin extends Plugin {
 		const file = this.app.vault.getAbstractFileByPath(context.sourcePath);
 		if (!file?.path) return;
 
-		const content = await this.app.vault.cachedRead(file);
-		const citeOrder = collectCitationOrder(content);
+		const citeOrder = await this.getCitationOrderForFile(file);
 		if (citeOrder.size === 0) return;
 
 		const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
@@ -1197,6 +1218,20 @@ class ScientificSourceImporterPlugin extends Plugin {
 			if (lastIndex < text.length) fragment.appendChild(document.createTextNode(text.slice(lastIndex)));
 			textNode.replaceWith(fragment);
 		}
+	}
+
+	async getCitationOrderForFile(file) {
+		const mtime = file.stat?.mtime || 0;
+		const cached = this.citationOrderCache.get(file.path);
+		if (cached?.mtime === mtime) return cached.order;
+		const content = await this.app.vault.cachedRead(file);
+		const order = collectCitationOrder(content);
+		this.citationOrderCache.set(file.path, { mtime, order });
+		if (this.citationOrderCache.size > CITATION_ORDER_CACHE_LIMIT) {
+			const oldestKey = this.citationOrderCache.keys().next().value;
+			this.citationOrderCache.delete(oldestKey);
+		}
+		return order;
 	}
 
 	async getSourceDetailsLeaf() {

@@ -146,7 +146,8 @@ class ImportService {
 				throw: false
 			});
 			if ((response.status < 200 || response.status >= 300) && response.status !== 206) return '';
-			return Buffer.from(response.arrayBuffer).toString('latin1');
+			const headBytes = response.arrayBuffer ? response.arrayBuffer.slice(0, 200000) : new ArrayBuffer(0);
+			return Buffer.from(headBytes).toString('latin1');
 		} catch (error) {
 			return '';
 		}
