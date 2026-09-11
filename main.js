@@ -744,6 +744,38 @@ class SourceImporterSettingTab extends PluginSettingTab {
 	}
 }
 
+class ZoteroDryRunModal extends Modal {
+	constructor(app, report) {
+		super(app);
+		this.report = report;
+	}
+
+	onOpen() {
+		const { contentEl } = this;
+		contentEl.empty();
+		contentEl.createEl('h2', { text: 'Проверка импорта Zotero без записи' });
+		const summary = this.report.summary || {};
+		contentEl.createEl('p', {
+			text: `Всего: ${summary.total || 0}; готовы: ${summary.ready || 0}; обновления: ${summary.updates || 0}; неполные: ${summary.incomplete || 0}; с предупреждениями: ${summary.withWarnings || 0}.`
+		});
+		contentEl.createEl('p', { text: this.report.privacy || '' });
+		const details = (this.report.items || [])
+			.filter((item) => item.status !== 'готов' || item.warnings.length > 0)
+			.slice(0, 200)
+			.map((item) => {
+				const warnings = item.warnings.length ? ` — ${item.warnings.join(' ')}` : '';
+				return `[${item.status}] ${item.title}${warnings}`;
+			})
+			.join('\n');
+		const pre = contentEl.createEl('pre');
+		pre.textContent = details || 'Проблем не найдено.';
+	}
+
+	onClose() {
+		this.contentEl.empty();
+	}
+}
+
 class ScientificSourceImporterPlugin extends Plugin {
 	async onload() {
 		this.loadInternalModules();
@@ -779,6 +811,12 @@ class ScientificSourceImporterPlugin extends Plugin {
 			id: 'import-scientific-sources-from-zotero',
 			name: 'Импортировать источники из Zotero',
 			callback: () => void this.importFromZotero()
+		});
+
+		this.addCommand({
+			id: 'audit-zotero-import-dry-run',
+			name: 'Проверить импорт Zotero без записи',
+			callback: () => void this.auditZoteroImport()
 		});
 
 		this.addCommand({
@@ -861,6 +899,21 @@ class ScientificSourceImporterPlugin extends Plugin {
 			new Notice(`Импорт Zotero завершён: ${records.length}; пропущено: ${skipped}.`);
 		}
 		return { records, skipped: imported.skipped };
+	}
+
+	async auditZoteroImport() {
+		try {
+			const report = await this.zoteroImporter.dryRun({
+				limit: this.settings.zoteroImportLimit,
+				existingSources: this.settings.importedSources || []
+			});
+			new ZoteroDryRunModal(this.app, report).open();
+			return report;
+		} catch (error) {
+			console.error(error);
+			new Notice(`Проверка Zotero не выполнена: ${error.message}`);
+			return null;
+		}
 	}
 
 	async rememberImportedSource(result) {

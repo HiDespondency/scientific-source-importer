@@ -25,6 +25,7 @@ class ImportService {
 		this.app = app;
 		this.settings = settings;
 		this.requestUrl = requestUrl;
+		this.crossrefCache = new Map();
 	}
 
 	async importFromUrl(rawUrl) {
@@ -92,25 +93,37 @@ class ImportService {
 	}
 
 	async fetchText(url) {
-		const response = await this.requestUrl({
-			url,
-			method: 'GET',
-			headers: { 'Accept': 'text/html,application/xhtml+xml,*/*;q=0.8' },
-			throw: false
-		});
-		if (response.status < 200 || response.status >= 300) throw new Error(`HTTP ${response.status}`);
-		return { text: response.text || '', headers: response.headers || {}, finalUrl: url };
+		return this.requestTextWithRetry(url, { 'Accept': 'text/html,application/xhtml+xml,*/*;q=0.8' });
 	}
 
 	async fetchArrayBuffer(url) {
-		const response = await this.requestUrl({
-			url,
-			method: 'GET',
-			headers: { 'Accept': 'application/pdf,*/*;q=0.8' },
-			throw: false
-		});
-		if (response.status < 200 || response.status >= 300) throw new Error(`HTTP ${response.status}`);
+		const response = await this.requestWithRetry(url, { 'Accept': 'application/pdf,*/*;q=0.8' });
 		return { arrayBuffer: response.arrayBuffer, headers: response.headers || {}, finalUrl: url };
+	}
+
+	async requestWithRetry(url, headers, attempts = 3) {
+		let lastError;
+		for (let attempt = 1; attempt <= attempts; attempt += 1) {
+			let response;
+			try {
+				response = await this.requestUrl({ url, method: 'GET', headers, throw: false });
+			} catch (error) {
+				lastError = error;
+			}
+			if (response) {
+				if (response.status >= 200 && response.status < 300) return response;
+				lastError = new Error(`HTTP ${response.status}`);
+				const retryable = [408, 425, 429].includes(response.status) || response.status >= 500;
+				if (!retryable) throw lastError;
+			}
+			if (attempt < attempts) await new Promise((resolve) => setTimeout(resolve, 250 * attempt));
+		}
+		throw lastError || new Error('Сетевой запрос не выполнен.');
+	}
+
+	async requestTextWithRetry(url, headers) {
+		const response = await this.requestWithRetry(url, headers);
+		return { text: response.text || '', headers: response.headers || {}, finalUrl: url };
 	}
 
 	findPdfUrl(html, baseUrl) {
@@ -136,13 +149,7 @@ class ImportService {
 
 	async fetchPdfHeadText(pdfUrl) {
 		try {
-			const response = await this.requestUrl({
-				url: pdfUrl,
-				method: 'GET',
-				headers: { 'Range': 'bytes=0-200000', 'Accept': 'application/pdf,*/*;q=0.8' },
-				throw: false
-			});
-			if ((response.status < 200 || response.status >= 300) && response.status !== 206) return '';
+			const response = await this.requestWithRetry(pdfUrl, { 'Range': 'bytes=0-200000', 'Accept': 'application/pdf,*/*;q=0.8' });
 			const headBytes = response.arrayBuffer ? response.arrayBuffer.slice(0, 200000) : new ArrayBuffer(0);
 			return Buffer.from(headBytes).toString('latin1');
 		} catch (error) {
@@ -153,6 +160,8 @@ class ImportService {
 	async fetchCrossref(doi) {
 		const cleanDoi = normalizeDoi(doi);
 		if (!cleanDoi) throw new Error('DOI пустой.');
+		const cached = this.crossrefCache.get(cleanDoi);
+		if (cached && Date.now() - cached.timestamp < 24 * 60 * 60 * 1000) return cached.value;
 		const response = await this.fetchText(`https://api.crossref.org/works/${encodeURIComponent(cleanDoi)}`);
 		const json = JSON.parse(response.text);
 		const message = json && json.message;
@@ -161,7 +170,7 @@ class ImportService {
 		const container = Array.isArray(message['container-title']) ? message['container-title'][0] : message['container-title'];
 		const dateParts = (message['published-print'] || message['published-online'] || message.issued || {})['date-parts'];
 		const year = Array.isArray(dateParts) && dateParts[0] ? String(dateParts[0][0] || '') : '';
-		return {
+		const result = {
 			title: title || '',
 			authors: formatAuthors(message.author || []),
 			publicationTitle: container || '',
@@ -180,6 +189,9 @@ class ImportService {
 			type: message.type || '',
 			links: Array.isArray(message.link) ? message.link : []
 		};
+		if (this.crossrefCache.size >= 200) this.crossrefCache.delete(this.crossrefCache.keys().next().value);
+		this.crossrefCache.set(cleanDoi, { value: result, timestamp: Date.now() });
+		return result;
 	}
 
 	async enrichMetadataFromCrossref(result) {
@@ -232,6 +244,7 @@ class ImportService {
 
 	addFieldWarnings(result) {
 		result.warnings.push(...bibliographicWarnings(result.metadata || {}, 'автоматически'));
+		if (!isSafeHttpUrl(result.sourceUrl)) result.warnings.push('Официальная ссылка на источник не найдена.');
 	}
 
 	async downloadPdf(pdfUrl, metadata, doi) {

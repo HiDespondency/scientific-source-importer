@@ -107,6 +107,54 @@ class ZoteroImporter {
 		return { results, skipped, source: data };
 	}
 
+	async dryRun(options = {}) {
+		const data = await this.readZoteroItems(options.limit);
+		const existingByZoteroKey = this.indexExistingByZoteroKey(options.existingSources || []);
+		const items = [];
+		for (const item of data.items || []) {
+			const zoteroKey = cleanText(item.zotero_key);
+			const existing = zoteroKey ? existingByZoteroKey.get(zoteroKey) : null;
+			const incomingMetadata = this.toMetadata(item);
+			const metadata = existing?.result?.metadata && this.importService?.mergeMetadata
+				? this.importService.mergeMetadata(existing.result.metadata, incomingMetadata)
+				: incomingMetadata;
+			const existingPdf = !!(existing?.pdfPath && this.app.vault.getAbstractFileByPath(existing.pdfPath));
+			const sourcePdf = cleanText((item.pdf_paths || [])[0]);
+			const sourceUrl = cleanText(item.url || existing?.sourceUrl || existing?.result?.sourceUrl);
+			let localPdf = false;
+			let localPdfReason = '';
+			try {
+				const maxBytes = Math.max(1, Number(this.settings.maxPdfMb) || 80) * 1024 * 1024;
+				localPdf = !!sourcePdf && isSafeLocalPdf(sourcePdf, maxBytes);
+			} catch (error) {
+				localPdfReason = error.message;
+			}
+			const warnings = [];
+			this.addFieldWarnings(metadata, warnings, sourceUrl);
+			if (!localPdf && !existingPdf) warnings.push(localPdfReason || 'Локальный PDF не найден.');
+			const status = existingPdf ? 'обновление' : localPdf ? 'готов' : 'неполный';
+			items.push({
+				title: cleanText(item.title) || zoteroKey || 'Источник Zotero',
+				zoteroKey,
+				status,
+				pdfPath: sourcePdf,
+				warnings
+			});
+		}
+		return {
+			source: data,
+			items,
+			summary: {
+				total: items.length,
+				ready: items.filter((item) => item.status === 'готов').length,
+				updates: items.filter((item) => item.status === 'обновление').length,
+				incomplete: items.filter((item) => item.status === 'неполный').length,
+				withWarnings: items.filter((item) => item.warnings.length > 0).length
+			},
+			privacy: 'Dry-run читает локальную базу Zotero и локальные вложения; ничего не записывает и не выполняет сетевых запросов.'
+		};
+	}
+
 	async importItem(item) {
 		const metadata = this.toMetadata(item);
 		const warnings = [];
@@ -138,7 +186,7 @@ class ZoteroImporter {
 		if ((item.pdf_paths || []).length > 1) {
 			warnings.push('У записи Zotero несколько PDF; импортирован первый файл.');
 		}
-		this.addFieldWarnings(metadata, warnings);
+		this.addFieldWarnings(metadata, warnings, autonomous.sourceUrl || cleanText(item.url));
 		return {
 			inputUrl: cleanText(item.url),
 			sourceUrl: autonomous.sourceUrl || cleanText(item.url),
@@ -152,16 +200,17 @@ class ZoteroImporter {
 	}
 
 	async reuseExistingItem(item, existing) {
-		const metadata = this.toMetadata(item);
+		const incomingMetadata = this.toMetadata(item);
+		const metadata = this.importService.mergeMetadata(existing?.result?.metadata || {}, incomingMetadata);
 		const warnings = [];
-		let autonomous = { metadata, sourceUrl: cleanText(item.url || existing.sourceUrl), pdfUrl: '', provenance: [], warnings: [] };
+		let autonomous = { metadata, sourceUrl: cleanText(item.url || existing.sourceUrl || existing.result?.sourceUrl), pdfUrl: '', provenance: [], warnings: [] };
 		if (this.settings.autonomousZoteroEnrichment !== false) {
 			autonomous = await this.autonomousResolver.enrich(metadata, item.url || existing.sourceUrl);
 			Object.assign(metadata, autonomous.metadata);
 			warnings.push(...autonomous.warnings);
 		}
 		await this.enrichDoiFromPdf(metadata, this.absoluteVaultPath(existing.pdfPath), warnings);
-		this.addFieldWarnings(metadata, warnings);
+		this.addFieldWarnings(metadata, warnings, autonomous.sourceUrl || cleanText(item.url || existing.sourceUrl));
 		return {
 			inputUrl: cleanText(item.url),
 			sourceUrl: autonomous.sourceUrl || cleanText(item.url || existing.sourceUrl),
@@ -289,8 +338,9 @@ class ZoteroImporter {
 		};
 	}
 
-	addFieldWarnings(metadata, warnings) {
+	addFieldWarnings(metadata, warnings, sourceUrl = '') {
 		warnings.push(...bibliographicWarnings(metadata, 'в Zotero или PDF'));
+		if (!cleanText(sourceUrl)) warnings.push('Официальная ссылка на источник не найдена.');
 	}
 
 	normalizeLimit(limit) {

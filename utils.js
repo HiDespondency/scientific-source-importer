@@ -188,7 +188,15 @@ function bibliographicWarnings(metadata = {}, origin = 'автоматическ
 	};
 
 	missing(metadata.title, 'название');
+	if (has(metadata.doi)) {
+		const doi = normalizeDoi(metadata.doi);
+		const suffix = doi.includes('/') ? doi.slice(doi.indexOf('/') + 1) : '';
+		if (!/^10\.\d{4,9}\/\S+$/i.test(doi) || doi.includes('//') || suffix.length < 2) {
+			warnings.push(`DOI выглядит некорректно и требует проверки (${origin}).`);
+		}
+	}
 	if (articleLike) {
+		missing(metadata.authors, 'авторы');
 		missing(metadata.publicationTitle, 'журнал / издание');
 		missing(metadata.year || metadata.date, 'год');
 		if (!has(metadata.volume) && !has(metadata.issue)) warnings.push(`Обязательное поле «том / выпуск» не найдено ${origin}.`);
@@ -196,6 +204,7 @@ function bibliographicWarnings(metadata = {}, origin = 'автоматическ
 			warnings.push(`Обязательное поле «страницы или номер статьи» не найдено ${origin}.`);
 		}
 	} else if (bookLike) {
+		missing(metadata.authors, 'авторы');
 		missing(metadata.year || metadata.date, 'год');
 		missing(metadata.publisher, 'издательство');
 		missing(metadata.place, 'место издания');
