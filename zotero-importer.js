@@ -4,9 +4,12 @@ const fs = require('fs');
 const path = require('path');
 const { execFile } = require('child_process');
 const { promisify } = require('util');
-const { extractDoiFromLocalPdf } = require('./pdf-metadata');
+const { extractMetadataFromLocalPdf } = require('./pdf-metadata');
+const { ImportService } = require('./import-service');
+const { AutonomousResolver } = require('./autonomous-resolver');
 const {
 	cleanText,
+	bibliographicWarnings,
 	firstAuthorFamily,
 	formatAuthors,
 	normalizeDoi,
@@ -46,10 +49,12 @@ function normalizeZoteroDate(value) {
 }
 
 class ZoteroImporter {
-	constructor(app, settings, pluginDir) {
+	constructor(app, settings, pluginDir, requestUrl) {
 		this.app = app;
 		this.settings = settings;
 		this.pluginDir = pluginDir;
+		this.importService = new ImportService(app, settings, requestUrl);
+		this.autonomousResolver = new AutonomousResolver(this.importService);
 	}
 
 	async readZoteroItems(limit) {
@@ -103,9 +108,32 @@ class ZoteroImporter {
 	}
 
 	async importItem(item) {
-		const pdfPath = await this.copyPdf(item);
 		const metadata = this.toMetadata(item);
 		const warnings = [];
+		let pdfPath = '';
+		let localPdfError = '';
+		try {
+			pdfPath = await this.copyPdf(item);
+		} catch (error) {
+			localPdfError = error.message;
+			warnings.push(localPdfError);
+		}
+		let autonomous = { metadata, sourceUrl: cleanText(item.url), pdfUrl: '', provenance: [], warnings: [] };
+		if (this.settings.autonomousZoteroEnrichment !== false) {
+			autonomous = await this.autonomousResolver.enrich(metadata, item.url);
+			Object.assign(metadata, autonomous.metadata);
+			warnings.push(...autonomous.warnings);
+			if (!pdfPath && autonomous.pdfUrl) {
+				try {
+					pdfPath = await this.importService.downloadPdf(autonomous.pdfUrl, metadata, metadata.doi);
+					if (localPdfError) warnings.splice(warnings.indexOf(localPdfError), 1);
+					autonomous.provenance.push('PDF скачан автономно по найденной официальной ссылке');
+				} catch (error) {
+					warnings.push(`Автономное скачивание PDF не удалось: ${error.message}`);
+				}
+			}
+		}
+		if (!pdfPath) throw new Error(`${warnings.join(' ')} Локальный PDF не найден; запись не создана.`);
 		await this.enrichDoiFromPdf(metadata, this.absoluteVaultPath(pdfPath), warnings);
 		if ((item.pdf_paths || []).length > 1) {
 			warnings.push('У записи Zotero несколько PDF; импортирован первый файл.');
@@ -113,12 +141,12 @@ class ZoteroImporter {
 		this.addFieldWarnings(metadata, warnings);
 		return {
 			inputUrl: cleanText(item.url),
-			sourceUrl: cleanText(item.url),
-			pdfUrl: '',
+			sourceUrl: autonomous.sourceUrl || cleanText(item.url),
+			pdfUrl: autonomous.pdfUrl || '',
 			pdfPath,
 			doi: metadata.doi,
 			metadata,
-			provenance: ['Zotero SQLite', 'PDF скопирован из локального хранилища Zotero'],
+			provenance: ['Zotero SQLite', ...(pdfPath && (item.pdf_paths || []).length ? ['PDF скопирован из локального хранилища Zotero'] : []), ...autonomous.provenance],
 			warnings
 		};
 	}
@@ -126,15 +154,22 @@ class ZoteroImporter {
 	async reuseExistingItem(item, existing) {
 		const metadata = this.toMetadata(item);
 		const warnings = [];
+		let autonomous = { metadata, sourceUrl: cleanText(item.url || existing.sourceUrl), pdfUrl: '', provenance: [], warnings: [] };
+		if (this.settings.autonomousZoteroEnrichment !== false) {
+			autonomous = await this.autonomousResolver.enrich(metadata, item.url || existing.sourceUrl);
+			Object.assign(metadata, autonomous.metadata);
+			warnings.push(...autonomous.warnings);
+		}
 		await this.enrichDoiFromPdf(metadata, this.absoluteVaultPath(existing.pdfPath), warnings);
+		this.addFieldWarnings(metadata, warnings);
 		return {
 			inputUrl: cleanText(item.url),
-			sourceUrl: cleanText(item.url || existing.sourceUrl),
-			pdfUrl: '',
+			sourceUrl: autonomous.sourceUrl || cleanText(item.url || existing.sourceUrl),
+			pdfUrl: autonomous.pdfUrl || existing.result?.pdfUrl || '',
 			pdfPath: existing.pdfPath,
 			doi: metadata.doi,
 			metadata,
-			provenance: ['Zotero SQLite', 'PDF уже был скопирован в хранилище'],
+			provenance: ['Zotero SQLite', 'PDF уже был скопирован в хранилище', ...autonomous.provenance],
 			warnings
 		};
 	}
@@ -163,6 +198,24 @@ class ZoteroImporter {
 			pages: normalizePages(item.pages),
 			doi: normalizeDoi(item.doi),
 			issn: cleanText(item.issn),
+			eissn: cleanText(item.eissn),
+			isbn: cleanText(item.isbn),
+			udc: cleanText(item.udc),
+			lccn: cleanText(item.lccn),
+			grnti: cleanText(item.grnti),
+			edn: cleanText(item.edn),
+			pmid: cleanText(item.pmid),
+			pmcid: cleanText(item.pmcid),
+			arxiv: cleanText(item.arxiv),
+			keywords: cleanText(item.keywords),
+			accessDate: cleanText(item.access_date),
+			edition: cleanText(item.edition),
+			series: cleanText(item.series),
+			seriesNumber: cleanText(item.series_number),
+			libraryCatalog: cleanText(item.library_catalog),
+			rights: cleanText(item.rights),
+			extra: cleanText(item.extra),
+			rawFields: item.raw_fields || {},
 			url: cleanText(item.url),
 			abstract: cleanText(item.abstract),
 			language: cleanText(item.language)
@@ -170,14 +223,18 @@ class ZoteroImporter {
 	}
 
 	async enrichDoiFromPdf(metadata, pdfPath, warnings) {
-		if (normalizeDoi(metadata.doi) || !pdfPath) return;
-		const { doi, method } = await extractDoiFromLocalPdf(pdfPath);
-		if (doi) {
-			metadata.doi = doi;
-			metadata.doiSource = method;
-			return;
+		if (!pdfPath) return;
+		const identifiers = await extractMetadataFromLocalPdf(pdfPath);
+		let enriched = false;
+		for (const [field, value] of Object.entries(identifiers)) {
+			const hasValue = Array.isArray(value) ? value.length > 0 : cleanText(value);
+			const hasExisting = Array.isArray(metadata[field]) ? metadata[field].length > 0 : cleanText(metadata[field]);
+			if (hasValue && !hasExisting) {
+				metadata[field] = value;
+				enriched = true;
+			}
 		}
-		if (warnings) warnings.push('DOI не найден в Zotero и не извлечён из PDF.');
+		if (enriched) metadata.identifiersSource = 'текстовый слой PDF';
 	}
 
 	absoluteVaultPath(vaultPath) {
@@ -233,18 +290,7 @@ class ZoteroImporter {
 	}
 
 	addFieldWarnings(metadata, warnings) {
-		const required = [
-			['title', 'название'],
-			['authors', 'авторы'],
-			['publicationTitle', 'журнал / издание'],
-			['year', 'год'],
-			['pages', 'страницы']
-		];
-		for (const [field, label] of required) {
-			const value = metadata[field];
-			const missing = Array.isArray(value) ? value.length === 0 : !cleanText(value);
-			if (missing) warnings.push(`Поле «${label}» не найдено в Zotero.`);
-		}
+		warnings.push(...bibliographicWarnings(metadata, 'в Zotero или PDF'));
 	}
 
 	normalizeLimit(limit) {

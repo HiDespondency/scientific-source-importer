@@ -54,6 +54,16 @@ function extractHtmlMetadata(html) {
 		),
 		doi: metaContent(html, ['citation_doi', 'DC.Identifier', 'dc.identifier', 'prism.doi']),
 		issn: metaContent(html, ['citation_issn', 'prism.issn']),
+		eissn: metaContent(html, ['citation_eissn', 'prism.eissn', 'eprints.eissn']),
+		isbn: metaContent(html, ['citation_isbn', 'prism.isbn', 'isbn']),
+		udc: metaContent(html, ['citation_udc', 'udc', 'dc.udc', 'DC.Udc']),
+		lccn: metaContent(html, ['citation_lccn', 'lccn']),
+		pmid: metaContent(html, ['citation_pmid', 'pmid']),
+		pmcid: metaContent(html, ['citation_pmcid', 'pmcid']),
+		arxiv: metaContent(html, ['citation_arxiv', 'arxiv']),
+		keywords: metaContent(html, ['citation_keywords', 'keywords', 'DC.Subject', 'dc.subject']),
+		abstract: metaContent(html, ['citation_abstract', 'DC.Description', 'dc.description']),
+		language: metaContent(html, ['citation_language', 'DC.Language', 'dc.language']),
 		url: metaContent(html, ['citation_public_url', 'og:url'])
 	};
 }

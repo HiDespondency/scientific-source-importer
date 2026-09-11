@@ -3,9 +3,10 @@
 const path = require('path');
 const { applyCyberleninkaMetadata, findCyberleninkaPdfUrl } = require('./cyberleninka');
 const { extractHtmlMetadata, metaContent } = require('./html-metadata');
-const { extractDoiFromLocalPdf } = require('./pdf-metadata');
+const { extractMetadataFromLocalPdf } = require('./pdf-metadata');
 const {
 	cleanText,
+	bibliographicWarnings,
 	decodeHtml,
 	firstAuthorFamily,
 	formatAuthors,
@@ -14,7 +15,6 @@ const {
 	mergeArrays,
 	normalizeDoi,
 	normalizePages,
-	responseHeader,
 	safeVaultPath,
 	sanitizeFileName,
 	yearFromDate
@@ -72,20 +72,17 @@ class ImportService {
 				result.pdfPath = await this.downloadPdf(result.pdfUrl, result.metadata, result.doi);
 				result.provenance.push('PDF сохранён в хранилище');
 			} catch (error) {
-				result.warnings.push(`PDF не сохранён: ${error.message}`);
+				throw new Error(`PDF не сохранён: ${error.message}`);
 			}
 		}
+		if (!result.pdfPath) throw new Error('PDF не найден или не удалось сохранить его локально. Импорт отменён.');
 
-		if (!result.doi && result.pdfPath) {
-			await this.enrichDoiFromSavedPdf(result);
+		if (result.pdfPath) {
+			await this.enrichIdentifiersFromSavedPdf(result);
 		}
 
 		if (result.doi && !crossrefChecked) {
 			await this.enrichMetadataFromCrossref(result);
-		}
-
-		if (!result.doi) {
-			result.warnings.push('DOI не найден.');
 		}
 
 		this.addFieldWarnings(result);
@@ -162,12 +159,14 @@ class ImportService {
 		if (!message) throw new Error('пустой ответ');
 		const title = Array.isArray(message.title) ? message.title[0] : message.title;
 		const container = Array.isArray(message['container-title']) ? message['container-title'][0] : message['container-title'];
-		const dateParts = (message.published-print || message.published-online || message.issued || {})['date-parts'];
+		const dateParts = (message['published-print'] || message['published-online'] || message.issued || {})['date-parts'];
 		const year = Array.isArray(dateParts) && dateParts[0] ? String(dateParts[0][0] || '') : '';
 		return {
 			title: title || '',
 			authors: formatAuthors(message.author || []),
 			publicationTitle: container || '',
+			publisher: message.publisher || '',
+			place: message['publisher-location'] || '',
 			date: year,
 			year,
 			volume: message.volume || '',
@@ -175,7 +174,11 @@ class ImportService {
 			pages: normalizePages(message.page || ''),
 			doi: cleanDoi,
 			issn: Array.isArray(message.ISSN) ? message.ISSN.join(', ') : '',
-			url: message.URL || ''
+			isbn: Array.isArray(message.ISBN) ? message.ISBN.join(', ') : cleanText(message.ISBN),
+			issns: Array.isArray(message.ISSN) ? message.ISSN : [],
+			url: message.URL || '',
+			type: message.type || '',
+			links: Array.isArray(message.link) ? message.link : []
 		};
 	}
 
@@ -190,12 +193,23 @@ class ImportService {
 		}
 	}
 
-	async enrichDoiFromSavedPdf(result) {
-		const { doi, method } = await extractDoiFromLocalPdf(this.absoluteVaultPath(result.pdfPath));
-		if (!doi) return;
-		result.doi = doi;
-		result.metadata = Object.assign({}, result.metadata || {}, { doi });
-		result.provenance.push(`DOI найден: ${method}`);
+	async enrichIdentifiersFromSavedPdf(result) {
+		const identifiers = await extractMetadataFromLocalPdf(this.absoluteVaultPath(result.pdfPath));
+		const metadata = Object.assign({}, result.metadata || {});
+		let enriched = false;
+		for (const [field, value] of Object.entries(identifiers)) {
+			const hasValue = Array.isArray(value) ? value.length > 0 : cleanText(value);
+			const hasExisting = Array.isArray(metadata[field]) ? metadata[field].length > 0 : cleanText(metadata[field]);
+			if (hasValue && !hasExisting) {
+				metadata[field] = value;
+				if (field === 'doi') result.doi = value;
+				enriched = true;
+			}
+		}
+		if (enriched) {
+			result.metadata = metadata;
+			result.provenance.push('Идентификаторы извлечены из PDF');
+		}
 	}
 
 	absoluteVaultPath(vaultPath) {
@@ -217,19 +231,7 @@ class ImportService {
 	}
 
 	addFieldWarnings(result) {
-		const metadata = result.metadata || {};
-		const required = [
-			['title', 'название'],
-			['authors', 'авторы'],
-			['publicationTitle', 'журнал / издание'],
-			['year', 'год'],
-			['pages', 'страницы']
-		];
-		for (const [field, label] of required) {
-			const value = metadata[field];
-			const missing = Array.isArray(value) ? value.length === 0 : !cleanText(value);
-			if (missing) result.warnings.push(`Поле «${label}» не найдено автоматически.`);
-		}
+		result.warnings.push(...bibliographicWarnings(result.metadata || {}, 'автоматически'));
 	}
 
 	async downloadPdf(pdfUrl, metadata, doi) {
@@ -238,7 +240,10 @@ class ImportService {
 		const size = response.arrayBuffer ? response.arrayBuffer.byteLength : 0;
 		const maxBytes = Math.max(1, this.settings.maxPdfMb) * 1024 * 1024;
 		if (size > maxBytes) throw new Error(`PDF больше лимита ${this.settings.maxPdfMb} МБ`);
-		if (!looksLikePdfUrl(response.finalUrl || pdfUrl) && !responseHeader(response.headers, 'content-type').toLowerCase().includes('pdf')) {
+		const signature = response.arrayBuffer
+			? Buffer.from(new Uint8Array(response.arrayBuffer).slice(0, 5)).toString('latin1')
+			: '';
+		if (signature !== '%PDF-') {
 			throw new Error('ответ не похож на PDF');
 		}
 

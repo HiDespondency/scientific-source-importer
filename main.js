@@ -9,6 +9,7 @@ const { shell } = require('electron');
 let ImportService;
 let ZoteroImporter;
 let buildReference;
+let buildCitationKey;
 
 const VIEW_TYPE_SOURCE_DETAILS = 'scientific-source-importer-details';
 const SOURCE_PANEL_MIN_WIDTH = 490;
@@ -20,6 +21,7 @@ const DEFAULT_SETTINGS = {
 	sourceFilesDir: 'Материалы/Импорт источников',
 	openAfterImport: true,
 	maxPdfMb: 80,
+	autonomousZoteroEnrichment: false,
 	zoteroDir: '',
 	zoteroDbPath: '',
 	zoteroImportLimit: 500,
@@ -233,6 +235,7 @@ class SourceDetailsView extends ItemView {
 		const reference = buildReference ? buildReference(Object.assign({}, metadata, { year }), result.sourceUrl) : '';
 		const citationKey = cleanText(metadata.citationKey || metadata.zoteroKey);
 		const obsidianReference = citationKey ? `[@${citationKey}]` : '';
+		const obsidianPdfLink = cleanText(result.pdfPath) ? `[[${cleanText(result.pdfPath)}]]` : '';
 
 		const header = this.createElement(container, 'div', { cls: 'scientific-source-details-header' });
 		const backButton = this.createElement(header, 'button', { cls: 'scientific-source-details-back', text: '←' });
@@ -253,20 +256,29 @@ class SourceDetailsView extends ItemView {
 		this.createElement(section, 'h4', { text: 'Информация' });
 		this.addRow(section, 'Тип записи', typeLabel(metadata.sourceType), { field: 'sourceType', rawValue: metadata.sourceType, normalize: typeLabel });
 		this.addRow(section, 'Название', title, { field: 'title', rawValue: metadata.title || title });
-		this.addRow(section, 'Автор', authors.join(', '), { field: 'authors', rawValue: authors.join(', ') });
-		this.addRow(section, 'Публикация', metadata.publicationTitle, { field: 'publicationTitle', rawValue: metadata.publicationTitle });
-		this.addRow(section, 'Издатель', metadata.publisher, { field: 'publisher', rawValue: metadata.publisher });
-		this.addRow(section, 'Место', metadata.place, { field: 'place', rawValue: metadata.place });
-		this.addRow(section, 'Дата', formatDateValue(metadata.date, year), { field: 'date', rawValue: metadata.date || year, normalize: (value) => formatDateValue(value, yearFromDate(value)) });
-		this.addRow(section, 'Том', metadata.volume, { field: 'volume', rawValue: metadata.volume });
-		this.addRow(section, 'Выпуск', metadata.issue, { field: 'issue', rawValue: metadata.issue });
-		this.addRow(section, 'Страницы', formatPages(metadata.pages), { field: 'pages', rawValue: metadata.pages, normalize: formatPages });
-		this.addRow(section, 'DOI', result.doi || metadata.doi, { field: 'doi', rawValue: result.doi || metadata.doi });
-		this.addRow(section, 'ISSN', metadata.issn, { field: 'issn', rawValue: metadata.issn });
-		this.addRow(section, 'eISSN', metadata.eissn, { field: 'eissn', rawValue: metadata.eissn });
-		this.addUrlRow(section, 'URL-адрес', result.sourceUrl);
+		this.addRow(section, 'Автор', authors.join(', '), { field: 'authors', rawValue: authors.join(', '), hideEmpty: true });
+		this.addRow(section, 'Публикация', metadata.publicationTitle, { field: 'publicationTitle', rawValue: metadata.publicationTitle, hideEmpty: true });
+		this.addRow(section, 'Издатель', metadata.publisher, { field: 'publisher', rawValue: metadata.publisher, hideEmpty: true });
+		this.addRow(section, 'Место', metadata.place, { field: 'place', rawValue: metadata.place, hideEmpty: true });
+		this.addRow(section, 'Дата', formatDateValue(metadata.date, year), { field: 'date', rawValue: metadata.date || year, normalize: (value) => formatDateValue(value, yearFromDate(value)), hideEmpty: true });
+		this.addRow(section, 'Том', metadata.volume, { field: 'volume', rawValue: metadata.volume, hideEmpty: true });
+		this.addRow(section, 'Выпуск', metadata.issue, { field: 'issue', rawValue: metadata.issue, hideEmpty: true });
+		this.addRow(section, 'Страницы', formatPages(metadata.pages), { field: 'pages', rawValue: metadata.pages, normalize: formatPages, hideEmpty: true });
+		this.addRow(section, 'DOI', result.doi || metadata.doi, { field: 'doi', rawValue: result.doi || metadata.doi, hideEmpty: true });
+		this.addRow(section, 'ISSN', metadata.issn, { field: 'issn', rawValue: metadata.issn, hideEmpty: true });
+		this.addRow(section, 'eISSN', metadata.eissn, { field: 'eissn', rawValue: metadata.eissn, hideEmpty: true });
+		this.addRow(section, 'ISBN', metadata.isbn, { field: 'isbn', rawValue: metadata.isbn, hideEmpty: true });
+		this.addRow(section, 'УДК', metadata.udc, { field: 'udc', rawValue: metadata.udc, hideEmpty: true });
+		this.addRow(section, 'LCCN / шифр', metadata.lccn, { field: 'lccn', rawValue: metadata.lccn, hideEmpty: true });
+		this.addRow(section, 'ГРНТИ', metadata.grnti, { field: 'grnti', rawValue: metadata.grnti, hideEmpty: true });
+		this.addRow(section, 'EDN', metadata.edn, { field: 'edn', rawValue: metadata.edn, hideEmpty: true });
+		this.addRow(section, 'PMID', metadata.pmid, { field: 'pmid', rawValue: metadata.pmid, hideEmpty: true });
+		this.addRow(section, 'PMCID', metadata.pmcid, { field: 'pmcid', rawValue: metadata.pmcid, hideEmpty: true });
+		this.addRow(section, 'arXiv', metadata.arxiv, { field: 'arxiv', rawValue: metadata.arxiv, hideEmpty: true });
+		this.addRow(section, 'Ключевые слова', metadata.keywords, { field: 'keywords', rawValue: metadata.keywords, hideEmpty: true });
+		this.addUrlRow(section, 'URL-адрес', result.sourceUrl, { hideEmpty: true });
 		this.addRow(section, 'PDF', baseName(result.pdfPath));
-		this.addRow(section, 'Библ. каталог', this.hostFromUrl(result.sourceUrl));
+		this.addRow(section, 'Библ. каталог', this.hostFromUrl(result.sourceUrl), { hideEmpty: true });
 
 		const referenceSection = this.createElement(container, 'div', { cls: 'scientific-source-details-section' });
 		const referenceHeader = this.createElement(referenceSection, 'div', { cls: 'scientific-source-details-section-header' });
@@ -275,6 +287,7 @@ class SourceDetailsView extends ItemView {
 		this.createElement(copyActions, 'span', { cls: 'scientific-source-details-copy-label', text: 'Копировать' });
 		this.addPanelAction(copyActions, 'ГОСТ сноску', () => this.copyText(reference, 'ГОСТ-сноска скопирована.'), !cleanText(reference));
 		this.addPanelAction(copyActions, 'Obsidian сноску', () => this.copyText(obsidianReference, 'Obsidian-сноска скопирована.'), !obsidianReference);
+		this.addPanelAction(copyActions, 'Obsidian PDF-ссылку', () => this.copyText(obsidianPdfLink, 'Obsidian-ссылка на PDF скопирована.'), !obsidianPdfLink);
 		const referenceEl = this.createElement(referenceSection, 'div', { cls: 'scientific-source-details-text' });
 		setText(referenceEl, reference, 'Требуется ручное оформление ссылки.');
 
@@ -438,6 +451,10 @@ class SourceDetailsView extends ItemView {
 	}
 
 	addRow(parent, label, value, editOptions = null) {
+		if (editOptions?.hideEmpty) {
+			const hasValue = Array.isArray(value) ? value.length > 0 : !!cleanText(value);
+			if (!hasValue) return;
+		}
 		const row = this.createElement(parent, 'div', { cls: 'scientific-source-details-row' });
 		this.createElement(row, 'div', { cls: 'scientific-source-details-label', text: label });
 		const valueEl = this.createElement(row, 'div', { cls: 'scientific-source-details-value' });
@@ -479,7 +496,8 @@ class SourceDetailsView extends ItemView {
 		new Notice('Поле источника возвращено к стандартному значению.');
 	}
 
-	addUrlRow(parent, label, url) {
+	addUrlRow(parent, label, url, options = {}) {
+		if (options.hideEmpty && !cleanText(url)) return;
 		const row = this.createElement(parent, 'div', { cls: 'scientific-source-details-row' });
 		this.createElement(row, 'div', { cls: 'scientific-source-details-label', text: label });
 		const cleanUrl = cleanText(url);
@@ -658,7 +676,7 @@ class SourceImporterSettingTab extends PluginSettingTab {
 				text.setPlaceholder(this.defaults.sourceFilesDir).setValue(this.plugin.settings.sourceFilesDir).onChange(async (value) => {
 					this.plugin.settings.sourceFilesDir = cleanText(value) || this.defaults.sourceFilesDir;
 					await this.plugin.saveSettings();
-					await this.plugin.cleanupMissingSources(false);
+					await this.plugin.auditMissingSources(false);
 					this.plugin.refreshSourceDetailsViews();
 				})
 			);
@@ -713,17 +731,27 @@ class SourceImporterSettingTab extends PluginSettingTab {
 					await this.plugin.saveSettings();
 				})
 			);
+
+		new Setting(containerEl)
+			.setName('Автономно дополнять импортированные источники')
+			.setDesc('После импорта из Zotero плагин проверяет библиографию по Crossref и официальным страницам, дополняет отсутствующие поля и PDF и сохраняет результат только в Obsidian. Zotero не изменяется.')
+			.addToggle((toggle) =>
+				toggle.setValue(this.plugin.settings.autonomousZoteroEnrichment === true).onChange(async (value) => {
+					this.plugin.settings.autonomousZoteroEnrichment = value;
+					await this.plugin.saveSettings();
+				})
+			);
 	}
 }
 
 class ScientificSourceImporterPlugin extends Plugin {
 	async onload() {
+		this.loadInternalModules();
 		await this.loadSettings();
 		this.citationOrderCache = new Map();
 		this.sourceKeyIndexCache = null;
-		this.loadInternalModules();
 		this.importService = new ImportService(this.app, this.settings, requestUrl);
-		this.zoteroImporter = new ZoteroImporter(this.app, this.settings, this.pluginDir);
+		this.zoteroImporter = new ZoteroImporter(this.app, this.settings, this.pluginDir, requestUrl);
 		this.registerView(VIEW_TYPE_SOURCE_DETAILS, (leaf) => new SourceDetailsView(leaf, this));
 		this.registerEditorExtension(createCitationExtension());
 		this.registerMarkdownPostProcessor((el, context) => this.replaceRenderedCitations(el, context));
@@ -755,13 +783,12 @@ class ScientificSourceImporterPlugin extends Plugin {
 
 		this.addCommand({
 			id: 'cleanup-missing-scientific-sources',
-			name: 'Очистить отсутствующие импортированные источники',
-			callback: () => void this.cleanupMissingSources(true)
+			name: 'Проверить отсутствующие PDF импортированных источников',
+			callback: () => void this.auditMissingSources(true)
 		});
 
 		this.registerEvent(this.app.vault.on('delete', (file) => {
 			if (file?.path) this.citationOrderCache.delete(file.path);
-			if (file?.path) void this.removeImportedSourceByPath(file.path);
 		}));
 		this.registerEvent(this.app.vault.on('rename', (file, oldPath) => {
 			if (oldPath) this.citationOrderCache.delete(oldPath);
@@ -790,6 +817,7 @@ class ScientificSourceImporterPlugin extends Plugin {
 					next.result = Object.assign({}, next.result);
 					delete next.result.sourceNotePath;
 				}
+				this.ensureCitationKey(next);
 				return next;
 			});
 			if (JSON.stringify(migrated) !== JSON.stringify(this.settings.importedSources)) {
@@ -826,7 +854,7 @@ class ScientificSourceImporterPlugin extends Plugin {
 		for (const result of imported.results) {
 			records.push(await this.rememberImportedSource(result));
 		}
-		await this.cleanupMissingSources(false);
+		await this.auditMissingSources(false);
 		await this.openSourceList();
 		const skipped = imported.skipped.length;
 		if (!options.silent) {
@@ -836,40 +864,83 @@ class ScientificSourceImporterPlugin extends Plugin {
 	}
 
 	async rememberImportedSource(result) {
-		const metadata = result?.metadata || {};
-		const authors = formatAuthors(metadata.authors).join(', ');
-		const year = cleanText(metadata.year || yearFromDate(metadata.date));
+		if (!result?.pdfPath || !this.app.vault.getAbstractFileByPath(result.pdfPath)) {
+			throw new Error('Источник не сохранён: локальный PDF отсутствует.');
+		}
 		const existing = this.settings.importedSources || [];
 		const incomingIdentity = this.recordIdentity({
-			zoteroKey: cleanText(metadata.zoteroKey),
+			zoteroKey: cleanText(result.metadata?.zoteroKey),
 			pdfPath: result.pdfPath || '',
 			sourceUrl: result.sourceUrl || '',
-			title: cleanText(metadata.title) || baseName(result.pdfPath) || 'Источник',
-			year,
+			title: cleanText(result.metadata?.title) || baseName(result.pdfPath) || 'Источник',
+			year: cleanText(result.metadata?.year || yearFromDate(result.metadata?.date)),
 			result
 		});
 		const previous = existing.find((item) => this.recordIdentity(item) === incomingIdentity);
+		const previousResult = previous?.result || {};
+		const mergedMetadata = this.importService?.mergeMetadata
+			? this.importService.mergeMetadata(previousResult.metadata || {}, result.metadata || {})
+			: Object.assign({}, previousResult.metadata || {}, result.metadata || {});
+		if (result.provenance?.includes('Crossref: подтверждённая библиографическая запись') && result.metadata?.doi) {
+			mergedMetadata.doi = result.metadata.doi;
+		}
+		const mergedResult = Object.assign({}, previousResult, result, {
+			pdfPath: result.pdfPath || previousResult.pdfPath || previous?.pdfPath || '',
+			sourceUrl: result.sourceUrl || previousResult.sourceUrl || previous?.sourceUrl || '',
+			inputUrl: result.inputUrl || previousResult.inputUrl || '',
+			pdfUrl: result.pdfUrl || previousResult.pdfUrl || '',
+			doi: result.doi || previousResult.doi || result.metadata?.doi || previousResult.metadata?.doi || '',
+			metadata: mergedMetadata,
+			provenance: [...new Set([...(previousResult.provenance || []), ...(result.provenance || [])].filter(Boolean))],
+			warnings: Array.isArray(result.warnings)
+				? [...new Set(result.warnings.filter(Boolean))]
+				: [...new Set((previousResult.warnings || []).filter(Boolean))]
+		});
+		this.ensureCitationKey(mergedResult);
+		const metadata = mergedResult.metadata || {};
+		const authors = formatAuthors(metadata.authors).join(', ');
+		const year = cleanText(metadata.year || yearFromDate(metadata.date));
 		const record = {
 			id: previous?.id || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
 			title: cleanText(metadata.title) || baseName(result.pdfPath) || 'Источник',
 			authors,
 			year,
 			publicationTitle: cleanText(metadata.publicationTitle),
-			sourceUrl: result.sourceUrl || '',
-			pdfPath: result.pdfPath || '',
+			sourceUrl: mergedResult.sourceUrl || '',
+			pdfPath: mergedResult.pdfPath || '',
 			zoteroKey: cleanText(metadata.zoteroKey),
 			citationKey: cleanText(metadata.citationKey),
 			importedAt: previous?.importedAt || new Date().toISOString(),
 			lastUsedAt: previous?.lastUsedAt || '',
-			result
+			result: mergedResult
 		};
-		const key = this.recordIdentity(record);
-		this.settings.importedSources = [
-			record,
-			...existing.filter((item) => this.recordIdentity(item) !== key)
-		].slice(0, 200);
+		const next = existing.slice();
+		const previousIndex = previous ? existing.indexOf(previous) : -1;
+		if (previousIndex >= 0) next[previousIndex] = record;
+		else next.push(record);
+		this.settings.importedSources = next;
 		await this.saveSettings();
 		return record;
+	}
+
+	ensureCitationKey(target) {
+		if (!target) return '';
+		const result = target.result || target;
+		result.metadata = result.metadata || {};
+		const metadata = result.metadata;
+		for (const field of ['eissn', 'isbn', 'udc', 'lccn', 'grnti', 'edn', 'pmid', 'pmcid', 'arxiv', 'keywords']) {
+			if (!Object.prototype.hasOwnProperty.call(metadata, field)) metadata[field] = '';
+		}
+		if (!metadata.citationKey && (target.citationKey || target.zoteroKey)) {
+			metadata.citationKey = target.citationKey || target.zoteroKey;
+		}
+		const identity = result.doi || metadata.doi || result.sourceUrl || metadata.url || result.pdfPath || target.pdfPath || target.id || '';
+		const key = buildCitationKey(metadata, identity);
+		if (key) {
+			metadata.citationKey = key;
+			target.citationKey = key;
+		}
+		return key;
 	}
 
 	recordIdentity(record) {
@@ -946,30 +1017,15 @@ class ScientificSourceImporterPlugin extends Plugin {
 		}
 	}
 
-	async cleanupMissingSources(notify = false) {
+	async auditMissingSources(notify = false) {
 		const sources = Array.isArray(this.settings.importedSources) ? this.settings.importedSources : [];
-		const existing = sources.filter((source) => !source.pdfPath || this.app.vault.getAbstractFileByPath(source.pdfPath));
-		const removed = sources.length - existing.length;
-		if (removed > 0) {
-			this.settings.importedSources = existing;
-			await this.saveSettings();
+		const missing = sources.filter((source) => !source.pdfPath || !this.app.vault.getAbstractFileByPath(source.pdfPath));
+		if (notify) {
+			new Notice(missing.length
+				? `PDF отсутствует у источников: ${missing.length}. Записи сохранены для восстановления.`
+				: 'Все локальные PDF найдены.');
 		}
-		if (notify) new Notice(removed ? `Удалено отсутствующих источников: ${removed}` : 'Отсутствующих источников нет.');
-		return removed;
-	}
-
-	async removeImportedSourceByPath(vaultPath) {
-		const normalized = cleanText(vaultPath);
-		if (!normalized) return 0;
-		const sources = Array.isArray(this.settings.importedSources) ? this.settings.importedSources : [];
-		const existing = sources.filter((source) => source.pdfPath !== normalized && source.result?.pdfPath !== normalized);
-		const removed = sources.length - existing.length;
-		if (removed > 0) {
-			this.settings.importedSources = existing;
-			await this.saveSettings();
-			this.refreshSourceDetailsViews();
-		}
-		return removed;
+		return missing.length;
 	}
 
 	async renameImportedSourcePath(oldPath, newPath) {
@@ -1027,7 +1083,29 @@ class ScientificSourceImporterPlugin extends Plugin {
 	async openRecordPdfInNewTab(record) {
 		await this.markRecordUsed(record);
 		const result = this.recordToResult(record);
-		await this.openPdfInNewTab(result.pdfPath);
+		const identity = this.recordIdentity(record || {});
+		const current = (this.settings.importedSources || []).find((source) =>
+			source === record
+			|| (identity && this.recordIdentity(source) === identity)
+			|| (record?.zoteroKey && source.zoteroKey === record.zoteroKey)
+			|| (record?.citationKey && source.citationKey === record.citationKey));
+		const candidates = [
+			result.pdfPath,
+			current?.pdfPath,
+			current?.result?.pdfPath
+		].filter(Boolean);
+		const localPath = candidates.find((candidate) => this.app.vault.getAbstractFileByPath(candidate));
+		if (localPath) {
+			await this.openPdfInNewTab(localPath);
+			return;
+		}
+		const externalPdf = result.pdfUrl || current?.result?.pdfUrl;
+		if (isSafeHttpUrl(externalPdf)) {
+			window.open(externalPdf);
+			new Notice('Локальная копия не найдена; открыт официальный PDF.');
+			return;
+		}
+		new Notice('Локальная PDF-копия не найдена.');
 	}
 
 	async markRecordUsed(record) {
@@ -1077,7 +1155,7 @@ class ScientificSourceImporterPlugin extends Plugin {
 	}
 
 	async openSourceList() {
-		await this.cleanupMissingSources(false);
+		await this.auditMissingSources(false);
 		await this.cleanupRightSidebarArtifacts();
 		const leaf = await this.getSourceDetailsLeaf();
 		if (!leaf) return;
@@ -1282,8 +1360,27 @@ class ScientificSourceImporterPlugin extends Plugin {
 
 	loadInternalModules() {
 		this.pluginDir = path.join(this.app.vault.adapter.basePath, this.manifest.dir);
+		const moduleNames = [
+			'autonomous-resolver.js',
+			'cyberleninka.js',
+			'html-metadata.js',
+			'import-service.js',
+			'pdf-metadata.js',
+			'reference.js',
+			'utils.js',
+			'zotero-importer.js'
+		];
+		for (const moduleName of moduleNames) {
+			const modulePath = path.join(this.pluginDir, moduleName);
+			try {
+				delete require.cache[require.resolve(modulePath)];
+			} catch (error) {
+				// Модуль ещё не загружался; очищать нечего.
+			}
+		}
 		({ ImportService } = require(path.join(this.pluginDir, 'import-service.js')));
 		({ ZoteroImporter } = require(path.join(this.pluginDir, 'zotero-importer.js')));
+		({ buildCitationKey } = require(path.join(this.pluginDir, 'utils.js')));
 		({ buildReference } = require(path.join(this.pluginDir, 'reference.js')));
 	}
 }

@@ -134,6 +134,39 @@ function firstAuthorFamily(authors) {
 	return cleanText(first.split(/\s+/)[0]) || 'Без автора';
 }
 
+function stableHash(value) {
+	let hash = 2166136261;
+	for (const character of String(value || '')) {
+		hash ^= character.codePointAt(0);
+		hash = Math.imul(hash, 16777619);
+	}
+	return (hash >>> 0).toString(36);
+}
+
+function citationKeyPart(value, fallback = '') {
+	const normalized = cleanText(value)
+		.normalize('NFKD')
+		.replace(/[\u0300-\u036f]/g, '')
+		.replace(/[^\p{L}\p{N}]+/gu, '');
+	return normalized || fallback;
+}
+
+function buildCitationKey(metadata = {}, identity = '') {
+	const explicit = cleanText(metadata.citationKey || metadata.zoteroKey);
+	if (explicit) return explicit;
+
+	const authors = formatAuthors(metadata.authors);
+	const author = citationKeyPart(firstAuthorFamily(authors), 'Источник');
+	const year = citationKeyPart(metadata.year || yearFromDate(metadata.date));
+	const title = citationKeyPart(metadata.shortTitle || metadata.title, 'Источник');
+	const basis = cleanText(identity)
+		|| cleanText(metadata.doi)
+		|| cleanText(metadata.url)
+		|| [author, year, title].filter(Boolean).join('|');
+	const suffix = stableHash(basis);
+	return `${author}${year}${title}${suffix}`.slice(0, 120);
+}
+
 function mergeArrays(primary, secondary) {
 	const values = [];
 	for (const value of [...(primary || []), ...(secondary || [])]) {
@@ -141,6 +174,36 @@ function mergeArrays(primary, secondary) {
 		if (clean && !values.includes(clean)) values.push(clean);
 	}
 	return values;
+}
+
+function bibliographicWarnings(metadata = {}, origin = 'автоматически') {
+	const has = (value) => Array.isArray(value) ? value.length > 0 : !!cleanText(value);
+	const warnings = [];
+	const type = cleanText(metadata.sourceType).toLowerCase();
+	const bookLike = ['book', 'booksection', 'thesis', 'report'].includes(type);
+	const articleLike = ['article', 'journalarticle', 'conferencepaper'].includes(type)
+		|| (!bookLike && (has(metadata.publicationTitle) || has(metadata.volume) || has(metadata.issue) || has(metadata.pages)));
+	const missing = (field, label) => {
+		if (!has(field)) warnings.push(`Обязательное поле «${label}» не найдено ${origin}.`);
+	};
+
+	missing(metadata.title, 'название');
+	if (articleLike) {
+		missing(metadata.publicationTitle, 'журнал / издание');
+		missing(metadata.year || metadata.date, 'год');
+		if (!has(metadata.volume) && !has(metadata.issue)) warnings.push(`Обязательное поле «том / выпуск» не найдено ${origin}.`);
+		if (!has(metadata.pages) && !has(metadata.articleNumber) && !has(metadata.elocation)) {
+			warnings.push(`Обязательное поле «страницы или номер статьи» не найдено ${origin}.`);
+		}
+	} else if (bookLike) {
+		missing(metadata.year || metadata.date, 'год');
+		missing(metadata.publisher, 'издательство');
+		missing(metadata.place, 'место издания');
+		if (['book', 'booksection'].includes(type) && !has(metadata.isbn)) {
+			warnings.push(`Обязательное поле «ISBN» не найдено ${origin}.`);
+		}
+	}
+	return warnings;
 }
 
 function responseHeader(headers, name) {
@@ -152,6 +215,8 @@ function responseHeader(headers, name) {
 }
 
 module.exports = {
+	buildCitationKey,
+	bibliographicWarnings,
 	cleanText,
 	decodeHtml,
 	escapeRegex,
